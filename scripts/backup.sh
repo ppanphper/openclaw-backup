@@ -26,35 +26,90 @@ info()  { echo -e "${GREEN}[✓]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
 error() { echo -e "${RED}[✗]${NC} $*"; exit 1; }
 
+command -v python3 >/dev/null 2>&1 || error "Require python3 to parse configuration. Please install it first."
+
 echo ""
 echo "🦞 OpenClaw Backup — ${TIMESTAMP}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 mkdir -p "$OUTPUT_DIR" "$WORK_DIR"
 
-# ── 1. Workspace (memory, skills, agent files) ────────────────────────────
-info "Backing up workspace..."
-WORKSPACE_DIR="${OPENCLAW_HOME}/workspace"
-if [ -d "$WORKSPACE_DIR" ]; then
-  mkdir -p "${WORK_DIR}/workspace"
-  rsync -a \
-    --exclude='node_modules/' \
-    --exclude='.git/' \
-    --exclude='*.tar.gz' \
-    --exclude='*.skill' \
-    --exclude='*.zip' \
-    --exclude='*.png' \
-    --exclude='*.jpg' \
-    --exclude='*.jpeg' \
-    --exclude='*.gif' \
-    --exclude='*.webp' \
-    --exclude='*.mp4' \
-    --exclude='*.mp3' \
-    "$WORKSPACE_DIR/" "${WORK_DIR}/workspace/"
-  info "  workspace → $(du -sh ${WORK_DIR}/workspace | cut -f1)"
+# ── Parse Gateway config (openclaw.json) for multiple Workspaces/Agents ──
+CONFIG_FILE="${OPENCLAW_HOME}/openclaw.json"
+PARSED_DIRS=""
+if [ -f "$CONFIG_FILE" ]; then
+  PARSED_DIRS=$(_OC_CONF="$CONFIG_FILE" OPENCLAW_HOME="${OPENCLAW_HOME}" python3 -c "
+import json, os
+config_path = os.environ.get('_OC_CONF', '')
+agents_dirs = set()
+workspace_dirs = set()
+try:
+    data = json.load(open(config_path))
+    agents = data.get('agents', {})
+    if isinstance(agents, dict):
+        for name, cfg in agents.items():
+            agents_dirs.add(name)
+            if isinstance(cfg, dict) and 'workspace' in cfg:
+                workspace_dirs.add(cfg['workspace'])
+    elif isinstance(agents, list):
+        for a in agents:
+            agents_dirs.add(str(a))
+except Exception:
+    pass
+# fallbacks
+agents_dirs.add('')
+workspace_dirs.add('workspace')
+print('AGENTS:' + '|'.join(filter(None, agents_dirs)))
+print('WORKSPACES:' + '|'.join(filter(None, workspace_dirs)))
+" 2>/dev/null || echo -e "AGENTS:\nWORKSPACES:workspace")
 else
-  warn "  workspace directory not found, skipping"
+  PARSED_DIRS=$(echo -e "AGENTS:\nWORKSPACES:workspace")
 fi
+
+IFS='|' read -ra AGENT_LIST <<< "$(echo "$PARSED_DIRS" | grep "^AGENTS:" | sed 's/^AGENTS://')"
+[ ${#AGENT_LIST[@]} -eq 0 ] && AGENT_LIST=("") # fallback to copy agents/ entirely if empty
+
+IFS='|' read -ra WS_LIST <<< "$(echo "$PARSED_DIRS" | grep "^WORKSPACES:" | sed 's/^WORKSPACES://')"
+[ ${#WS_LIST[@]} -eq 0 ] && WS_LIST=("workspace")
+
+# ── 1. Workspace (memory, skills, agent files) ────────────────────────────
+info "Backing up workspaces..."
+for ws_path in "${WS_LIST[@]}"; do
+  if [[ "$ws_path" == /* ]]; then
+    target="$ws_path"
+  else
+    target="${OPENCLAW_HOME}/${ws_path}"
+  fi
+  
+  if [ -d "$target" ]; then
+    # Create relative path structure. Workspaces not inside OPENCLAW_HOME are placed in 'workspaces/external_...'
+    rel_path=$(realpath --relative-to="${OPENCLAW_HOME}" "$target" 2>/dev/null || echo "workspaces/$(basename "$target")")
+    if [[ "$rel_path" == /* ]] || [[ "$rel_path" == ".."* ]]; then
+       rel_path="workspaces/external_$(basename "$target")"
+    fi
+    mkdir -p "${WORK_DIR}/${rel_path}"
+    
+    rsync -a \
+      --exclude='node_modules/' \
+      --exclude='.git/' \
+      --exclude='*.tar.gz' \
+      --exclude='*.skill' \
+      --exclude='*.zip' \
+      --exclude='*.png' \
+      --exclude='*.jpg' \
+      --exclude='*.jpeg' \
+      --exclude='*.gif' \
+      --exclude='*.webp' \
+      --exclude='*.mp4' \
+      --exclude='*.mp3' \
+      "$target/" "${WORK_DIR}/${rel_path}/"
+      
+    info "  ${rel_path} → $(du -sh "${WORK_DIR}/${rel_path}" | cut -f1)"
+  else
+    warn "  workspace '$ws_path' not found, skipping"
+  fi
+done
+
 
 # ── 2. Gateway config (openclaw.json) ────────────────────────────────────
 # Contains bot tokens, model API keys, channel config — all needed for restore
@@ -101,20 +156,27 @@ for channel_dir in telegram whatsapp signal discord; do
   fi
 done
 
-# ── 5. Agent config & session history ────────────────────────────────────
-# agents/main/agent/ — model provider config (apiKey, baseUrl, models)
-# agents/main/sessions/ — full conversation history (.jsonl)
 info "Backing up agent config & session history..."
-AGENTS_DIR="${OPENCLAW_HOME}/agents"
-if [ -d "$AGENTS_DIR" ]; then
-  mkdir -p "${WORK_DIR}/agents"
-  rsync -a \
-    --exclude='*.lock' \
-    --exclude='*.deleted.*' \
-    "$AGENTS_DIR/" "${WORK_DIR}/agents/"
-  SESSIONS_COUNT=$(find "${WORK_DIR}/agents" -name "*.jsonl" | wc -l | tr -d ' ')
-  info "  agents → model config + ${SESSIONS_COUNT} sessions"
-fi
+for agent_name in "${AGENT_LIST[@]}"; do
+  if [ -z "$agent_name" ]; then
+    AGENTS_DIR="${OPENCLAW_HOME}/agents"
+    target_rel="agents"
+  else
+    AGENTS_DIR="${OPENCLAW_HOME}/agents/${agent_name}"
+    target_rel="agents/${agent_name}"
+  fi
+
+  if [ -d "$AGENTS_DIR" ]; then
+    mkdir -p "${WORK_DIR}/${target_rel}"
+    rsync -a \
+      --exclude='*.lock' \
+      --exclude='*.deleted.*' \
+      "$AGENTS_DIR/" "${WORK_DIR}/${target_rel}/"
+      
+    SESSIONS_COUNT=$(find "${WORK_DIR}/${target_rel}" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
+    info "  ${target_rel} → model config + ${SESSIONS_COUNT} sessions"
+  fi
+done
 
 # ── 6. Devices (paired nodes/phones) ─────────────────────────────────────
 info "Backing up devices..."
