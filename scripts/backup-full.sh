@@ -35,19 +35,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # 默认排除规则文件：与本脚本同级目录下的 backup-exclude.conf
 [ -z "$EXCLUDE_FILE" ] && EXCLUDE_FILE="${SCRIPT_DIR}/backup-exclude.conf"
 
-# Agent 名称：从 IDENTITY.md 读取，回退到 hostname
-AGENT_NAME=""
-for ws_dir in "${OPENCLAW_HOME}"/workspace-* "${OPENCLAW_HOME}/workspace"; do
-  IDENTITY_FILE="${ws_dir}/IDENTITY.md"
-  if [ -f "$IDENTITY_FILE" ]; then
-    AGENT_NAME=$(grep -m1 '\*\*Name:\*\*' "$IDENTITY_FILE" 2>/dev/null \
-      | sed 's/.*\*\*Name:\*\* *//' | tr -d '\r' | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
-    [ -n "$AGENT_NAME" ] && break
-  fi
-done
-AGENT_NAME="${AGENT_NAME:-$(hostname)}"
-
-BACKUP_NAME="openclaw-full-backup_${AGENT_NAME}_${TIMESTAMP}"
+# 使用 hostname 作为标识符，配合时间戳保证唯一性
+HOST_NAME=$(hostname | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
+BACKUP_NAME="openclaw-full-backup_${HOST_NAME}_${TIMESTAMP}"
 
 # ── 颜色输出 ────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
@@ -90,7 +80,8 @@ echo ""
 MANIFEST_TMP=$(mktemp /tmp/oc-manifest.XXXXXX)
 trap "rm -f $EXCLUDE_TMPFILE $MANIFEST_TMP" EXIT
 
-OC_VERSION=$(openclaw --version 2>/dev/null | head -1 || echo 'unknown')
+OC_VERSION=$(openclaw --version 2>/dev/null | head -1 || true)
+OC_VERSION="${OC_VERSION:-unknown}"
 
 cat > "$MANIFEST_TMP" <<EOF
 {
@@ -132,7 +123,7 @@ info "打包完成: ${ARCHIVE}"
 info "归档大小: ${ARCHIVE_SIZE}"
 
 # ── 对比统计 ────────────────────────────────────────────────────────────────
-ORIGINAL_SIZE=$(du -sh "$OPENCLAW_HOME" --exclude='node_modules' --exclude='.git' 2>/dev/null | cut -f1 || du -sh "$OPENCLAW_HOME" 2>/dev/null | cut -f1 || echo "unknown")
+ORIGINAL_SIZE=$(du -sh "$OPENCLAW_HOME" 2>/dev/null | cut -f1 || echo "unknown")
 info "原始目录: ${ORIGINAL_SIZE} → 压缩后: ${ARCHIVE_SIZE}"
 warn "归档包含凭证 — 请妥善保管 (chmod 600 已应用)"
 
