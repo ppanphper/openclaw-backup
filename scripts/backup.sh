@@ -47,13 +47,24 @@ try:
     data = json.load(open(config_path))
     agents = data.get('agents', {})
     if isinstance(agents, dict):
-        for name, cfg in agents.items():
-            agents_dirs.add(name)
-            if isinstance(cfg, dict) and 'workspace' in cfg:
-                workspace_dirs.add(cfg['workspace'])
+        if 'list' in agents and isinstance(agents['list'], list):
+            for a in agents['list']:
+                if isinstance(a, dict):
+                    if 'id' in a: agents_dirs.add(a['id'])
+                    if 'workspace' in a: workspace_dirs.add(a['workspace'])
+        else:
+            for name, cfg in agents.items():
+                if name == 'defaults': continue
+                agents_dirs.add(name)
+                if isinstance(cfg, dict) and 'workspace' in cfg:
+                    workspace_dirs.add(cfg['workspace'])
     elif isinstance(agents, list):
         for a in agents:
-            agents_dirs.add(str(a))
+            if isinstance(a, dict) and 'id' in a:
+                agents_dirs.add(a['id'])
+                if 'workspace' in a: workspace_dirs.add(a['workspace'])
+            else:
+                agents_dirs.add(str(a))
 except Exception:
     pass
 # fallbacks
@@ -89,7 +100,7 @@ for ws_path in "${WS_LIST[@]}"; do
     fi
     mkdir -p "${WORK_DIR}/${rel_path}"
     
-    rsync -a \
+    rsync -a --no-specials --no-devices \
       --exclude='node_modules/' \
       --exclude='.git/' \
       --exclude='*.tar.gz' \
@@ -119,6 +130,8 @@ if [ -f "$CONFIG_FILE" ]; then
   mkdir -p "${WORK_DIR}/config"
   cp "$CONFIG_FILE" "${WORK_DIR}/config/openclaw.json"
   [ -f "${CONFIG_FILE}.bak" ] && cp "${CONFIG_FILE}.bak" "${WORK_DIR}/config/openclaw.json.bak"
+  [ -f "${OPENCLAW_HOME}/.env" ] && cp "${OPENCLAW_HOME}/.env" "${WORK_DIR}/config/.env" && info "  .env → safely bound"
+  [ -f "${OPENCLAW_HOME}/exec-approvals.json" ] && cp "${OPENCLAW_HOME}/exec-approvals.json" "${WORK_DIR}/config/exec-approvals.json"
   info "  openclaw.json → $(wc -c < ${WORK_DIR}/config/openclaw.json) bytes"
 else
   warn "  openclaw.json not found, skipping"
@@ -129,7 +142,7 @@ info "Backing up system skills..."
 SYSTEM_SKILLS_DIR="${OPENCLAW_HOME}/skills"
 if [ -d "$SYSTEM_SKILLS_DIR" ] && [ -n "$(ls -A ${SYSTEM_SKILLS_DIR} 2>/dev/null)" ]; then
   mkdir -p "${WORK_DIR}/skills/system"
-  rsync -a "$SYSTEM_SKILLS_DIR/" "${WORK_DIR}/skills/system/"
+  rsync -a --no-specials --no-devices --exclude='*.sock' --exclude='node_modules/' "$SYSTEM_SKILLS_DIR/" "${WORK_DIR}/skills/system/"
   info "  system skills → $(ls ${WORK_DIR}/skills/system | wc -l | tr -d ' ') items"
 else
   warn "  no system skills found"
@@ -142,7 +155,7 @@ info "Backing up credentials & channel state..."
 CREDS_DIR="${OPENCLAW_HOME}/credentials"
 if [ -d "$CREDS_DIR" ]; then
   mkdir -p "${WORK_DIR}/credentials"
-  rsync -a "$CREDS_DIR/" "${WORK_DIR}/credentials/"
+  rsync -a --no-specials --no-devices "$CREDS_DIR/" "${WORK_DIR}/credentials/"
   info "  credentials → $(ls ${WORK_DIR}/credentials | tr '\n' ' ')"
 fi
 
@@ -151,7 +164,7 @@ for channel_dir in telegram whatsapp signal discord; do
   CHAN_DIR="${OPENCLAW_HOME}/${channel_dir}"
   if [ -d "$CHAN_DIR" ]; then
     mkdir -p "${WORK_DIR}/channels/${channel_dir}"
-    rsync -a "$CHAN_DIR/" "${WORK_DIR}/channels/${channel_dir}/"
+    rsync -a --no-specials --no-devices "$CHAN_DIR/" "${WORK_DIR}/channels/${channel_dir}/"
     info "  channel state: ${channel_dir}"
   fi
 done
@@ -168,7 +181,7 @@ for agent_name in "${AGENT_LIST[@]}"; do
 
   if [ -d "$AGENTS_DIR" ]; then
     mkdir -p "${WORK_DIR}/${target_rel}"
-    rsync -a \
+    rsync -a --no-specials --no-devices \
       --exclude='*.lock' \
       --exclude='*.deleted.*' \
       "$AGENTS_DIR/" "${WORK_DIR}/${target_rel}/"
@@ -183,7 +196,7 @@ info "Backing up devices..."
 DEVICES_DIR="${OPENCLAW_HOME}/devices"
 if [ -d "$DEVICES_DIR" ]; then
   mkdir -p "${WORK_DIR}/devices"
-  rsync -a "$DEVICES_DIR/" "${WORK_DIR}/devices/"
+  rsync -a --no-specials --no-devices "$DEVICES_DIR/" "${WORK_DIR}/devices/"
   info "  devices → $(ls ${WORK_DIR}/devices | tr '\n' ' ')"
 fi
 
@@ -192,7 +205,7 @@ info "Backing up identity..."
 IDENTITY_DIR="${OPENCLAW_HOME}/identity"
 if [ -d "$IDENTITY_DIR" ]; then
   mkdir -p "${WORK_DIR}/identity"
-  rsync -a "$IDENTITY_DIR/" "${WORK_DIR}/identity/"
+  rsync -a --no-specials --no-devices "$IDENTITY_DIR/" "${WORK_DIR}/identity/"
   info "  identity → $(ls ${WORK_DIR}/identity | tr '\n' ' ')"
 fi
 
@@ -209,7 +222,7 @@ info "Backing up cron state..."
 CRON_DIR="${OPENCLAW_HOME}/cron"
 if [ -d "$CRON_DIR" ]; then
   mkdir -p "${WORK_DIR}/cron"
-  rsync -a "$CRON_DIR/" "${WORK_DIR}/cron/"
+  rsync -a --no-specials --no-devices "$CRON_DIR/" "${WORK_DIR}/cron/"
   info "  cron → $(ls ${WORK_DIR}/cron | wc -l | tr -d ' ') files"
 fi
 
