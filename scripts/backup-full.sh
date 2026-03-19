@@ -87,7 +87,6 @@ cat > "$MANIFEST_TMP" <<EOF
 {
   "backup_name": "${BACKUP_NAME}",
   "backup_mode": "full",
-  "agent_name": "${AGENT_NAME}",
   "timestamp": "${TIMESTAMP}",
   "hostname": "$(hostname)",
   "openclaw_home": "${OPENCLAW_HOME}",
