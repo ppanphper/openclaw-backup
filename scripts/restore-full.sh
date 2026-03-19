@@ -25,6 +25,7 @@ for arg in "${@:2}"; do
 done
 
 OPENCLAW_HOME="${HOME}/.openclaw"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ── 颜色输出 ────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -38,6 +39,32 @@ dryrun(){ echo -e "${CYAN}[DRY]${NC} $*"; }
 [ ! -f "$ARCHIVE" ] && error "归档文件不存在: $ARCHIVE"
 command -v python3 >/dev/null 2>&1 || error "需要 python3 来解析配置文件。请先安装。"
 
+# ── 自动解密逻辑 ────────────────────────────────────────────────────────────
+IS_ENCRYPTED=false
+REAL_ARCHIVE="$ARCHIVE"
+if [[ "$ARCHIVE" == *.enc ]]; then
+    IS_ENCRYPTED=true
+    info "检测到加密归档，正在准备解密..."
+    
+    OC_BACKUP_PASS="${OC_BACKUP_PASS:-}"
+    if [ -z "$OC_BACKUP_PASS" ]; then
+        echo -n "   请输入备份加密密码: "
+        read -rs OC_BACKUP_PASS
+        echo ""
+    fi
+    
+    DECRYPTED_TMP=$(mktemp /tmp/oc-decrypt.XXXXXX.tar.gz)
+    # 确保解密临时文件能被清理
+    trap "rm -f $DECRYPTED_TMP" EXIT
+    
+    if ! openssl enc -aes-256-cbc -d -salt -pbkdf2 -iter 100000 \
+        -in "$ARCHIVE" -out "$DECRYPTED_TMP" -pass "pass:${OC_BACKUP_PASS}" 2>/dev/null; then
+        error "解密失败：密码错误或归档已损坏。"
+    fi
+    info "解密成功"
+    REAL_ARCHIVE="$DECRYPTED_TMP"
+fi
+
 echo ""
 echo "🦞 OpenClaw Full Restore"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -46,7 +73,7 @@ $DRY_RUN && echo -e "${CYAN}[DRY RUN 模式 — 不会做任何修改]${NC}\n"
 # ── 探测归档内部结构 ────────────────────────────────────────────────────────
 # 全卷备份的根目录是 .openclaw/，检测是否符合预期
 info "正在检测归档结构..."
-ARCHIVE_ROOT=$(tar -tzf "$ARCHIVE" | head -1 | cut -d'/' -f1)
+ARCHIVE_ROOT=$(tar -tzf "$REAL_ARCHIVE" | head -1 | cut -d'/' -f1)
 
 if [ "$ARCHIVE_ROOT" != ".openclaw" ]; then
   error "归档结构异常：根目录为 '${ARCHIVE_ROOT}'，预期为 '.openclaw'。这不是全卷备份生成的归档文件。请使用 restore.sh 恢复白名单备份。"
@@ -54,19 +81,18 @@ fi
 info "归档结构验证通过 (根目录: ${ARCHIVE_ROOT})"
 
 # ── 显示 Manifest ───────────────────────────────────────────────────────────
-MANIFEST_EXISTS=$(tar -tzf "$ARCHIVE" 2>/dev/null | grep '.backup-manifest.json' || true)
+MANIFEST_EXISTS=$(tar -tzf "$REAL_ARCHIVE" 2>/dev/null | grep '.backup-manifest.json' || true)
 if [ -n "$MANIFEST_EXISTS" ]; then
   echo ""
   echo "📋 Manifest:"
-  tar -xzf "$ARCHIVE" -C /tmp --include='*/.backup-manifest.json' 2>/dev/null || true
-  MANIFEST_FILE=$(find /tmp -name '.backup-manifest.json' -newer "$ARCHIVE" 2>/dev/null | head -1 || true)
+  tar -xzf "$REAL_ARCHIVE" -C /tmp --include='*/.backup-manifest.json' 2>/dev/null || true
+  MANIFEST_FILE=$(find /tmp -name '.backup-manifest.json' -newer "$REAL_ARCHIVE" 2>/dev/null | head -1 || true)
   if [ -n "$MANIFEST_FILE" ] && [ -f "$MANIFEST_FILE" ]; then
     python3 -c "
 import json
 d = json.load(open('${MANIFEST_FILE}'))
 print(f\"  备份名称  : {d.get('backup_name', 'unknown')}\")
 print(f\"  备份模式  : {d.get('backup_mode', 'unknown')}\")
-print(f\"  Agent 名称: {d.get('agent_name', 'unknown')}\")
 print(f\"  创建时间  : {d.get('timestamp', 'unknown')}\")
 print(f\"  源主机    : {d.get('hostname', 'unknown')}\")
 print(f\"  OC 版本   : {d.get('openclaw_version', 'unknown')}\")
@@ -78,7 +104,7 @@ print(f\"  排除规则数: {d.get('exclude_rules_count', 'unknown')}\")
 fi
 
 # ── 统计归档内容 ────────────────────────────────────────────────────────────
-FILE_COUNT=$(tar -tzf "$ARCHIVE" | wc -l | tr -d ' ')
+FILE_COUNT=$(tar -tzf "$REAL_ARCHIVE" | wc -l | tr -d ' ')
 ARCHIVE_SIZE=$(du -sh "$ARCHIVE" | cut -f1)
 info "归档文件: $(basename "$ARCHIVE")"
 info "文件数量: ${FILE_COUNT} 个"
@@ -128,8 +154,8 @@ if $DRY_RUN; then
   dryrun "  6. 写入 .restore-complete.json 标志文件"
   echo ""
   echo "   文件将被覆盖的目录:"
-  tar -tzf "$ARCHIVE" | cut -d'/' -f1-2 | sort -u | head -30 | sed 's/^/     /'
-  TOTAL_DIRS=$(tar -tzf "$ARCHIVE" | cut -d'/' -f1-2 | sort -u | wc -l | tr -d ' ')
+  tar -tzf "$REAL_ARCHIVE" | cut -d'/' -f1-2 | sort -u | head -30 | sed 's/^/     /'
+  TOTAL_DIRS=$(tar -tzf "$REAL_ARCHIVE" | cut -d'/' -f1-2 | sort -u | wc -l | tr -d ' ')
   [ "$TOTAL_DIRS" -gt 30 ] && echo "     ... 及其他 $((TOTAL_DIRS - 30)) 个路径"
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -156,17 +182,23 @@ fi
 echo ""
 
 # ── 恢复前自动快照 ──────────────────────────────────────────────────────────
-AUTO_BACKUP="/tmp/openclaw-pre-restore-$(date +%Y%m%d_%H%M%S).tar.gz"
-warn "正在自动备份当前状态到: $AUTO_BACKUP"
-tar -czf "$AUTO_BACKUP" \
-  -C "$(dirname "$OPENCLAW_HOME")" \
-  --exclude='*.log' \
-  --exclude='node_modules' \
-  --exclude='.git' \
-  --exclude='media' \
-  "$(basename "$OPENCLAW_HOME")" 2>/dev/null || warn "  自动备份遇到部分错误 (继续执行)"
-chmod 600 "$AUTO_BACKUP"
-info "  恢复前快照已保存: $AUTO_BACKUP"
+# 逻辑重构：直接调用同级的 backup-full.sh 执行快照，确保规则一致
+if [ -f "${SCRIPT_DIR}/backup-full.sh" ]; then
+    warn "正在执行恢复前快照 (调用 backup-full.sh)..."
+    # 强制禁用快照加密，避免在后台运行时弹密码
+    OC_BACKUP_PASS="" bash "${SCRIPT_DIR}/backup-full.sh" /tmp > /tmp/oc-snapshot.log 2>&1 || warn "  快照生成遇到部分警告"
+    
+    # 从日志中提取生成的文件名
+    AUTO_BACKUP=$(grep "✅ 全卷备份完成:" /tmp/oc-snapshot.log | awk '{print $NF}' | tr -d '\r')
+    if [ -n "$AUTO_BACKUP" ]; then
+        AUTO_BACKUP="/tmp/${AUTO_BACKUP}"
+        info "  快照已保存: ${AUTO_BACKUP}"
+    else
+        warn "  未能自动识别快照文件名，请检查 /tmp/oc-snapshot.log"
+    fi
+else
+    warn "未找到 backup-full.sh，跳过自动快照。"
+fi
 
 # ── 停止 Gateway ────────────────────────────────────────────────────────────
 warn "正在停止 OpenClaw Gateway..."
@@ -175,7 +207,7 @@ sleep 2
 
 # ── 执行全卷解压覆盖 ────────────────────────────────────────────────────────
 info "正在解压归档到 ${OPENCLAW_HOME} ..."
-tar -xzf "$ARCHIVE" -C "$(dirname "$OPENCLAW_HOME")"
+tar -xzf "$REAL_ARCHIVE" -C "$(dirname "$OPENCLAW_HOME")"
 info "全卷解压完成"
 
 # 清理打包时临时写入的 manifest 文件

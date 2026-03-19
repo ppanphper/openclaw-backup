@@ -114,8 +114,23 @@ tar -czf "$ARCHIVE" \
 # 清理临时 manifest
 rm -f "$MANIFEST_DEST"
 
-# 设置安全权限（归档包含敏感凭证）
+# 设置安全权限
 chmod 600 "$ARCHIVE"
+
+# ── 强化加密 (可选) ──────────────────────────────────────────────────────────
+OC_BACKUP_PASS="${OC_BACKUP_PASS:-}"
+if [ -n "$OC_BACKUP_PASS" ]; then
+    info "正在进行 AES-256 加密..."
+    ENC_ARCHIVE="${ARCHIVE}.enc"
+    openssl enc -aes-256-cbc -salt -pbkdf2 -iter 100000 \
+        -in "$ARCHIVE" -out "$ENC_ARCHIVE" -pass "pass:${OC_BACKUP_PASS}"
+    
+    # 彻底移除原始未加密文件
+    rm -f "$ARCHIVE"
+    ARCHIVE="$ENC_ARCHIVE"
+    chmod 600 "$ARCHIVE"
+    info "加密完成: ${ARCHIVE}"
+fi
 
 ARCHIVE_SIZE=$(du -sh "$ARCHIVE" | cut -f1)
 info "打包完成: ${ARCHIVE}"
@@ -127,10 +142,11 @@ info "原始目录: ${ORIGINAL_SIZE} → 压缩后: ${ARCHIVE_SIZE}"
 warn "归档包含凭证 — 请妥善保管 (chmod 600 已应用)"
 
 # ── 清理旧备份（保留最近 7 个） ──────────────────────────────────────────────
-BACKUP_COUNT=$(ls "${OUTPUT_DIR}"/openclaw-full-backup_*.tar.gz 2>/dev/null | wc -l | tr -d ' ')
+BACKUP_FILES=$(ls "${OUTPUT_DIR}"/openclaw-full-backup_*.tar.gz* 2>/dev/null | grep -E '\.tar\.gz(\.enc)?$' || true)
+BACKUP_COUNT=$(echo "$BACKUP_FILES" | grep -v '^$' | wc -l | tr -d ' ')
 if [ "$BACKUP_COUNT" -gt 7 ]; then
   info "清理旧的全卷备份 (保留最近 7 个)..."
-  ls -t "${OUTPUT_DIR}"/openclaw-full-backup_*.tar.gz | tail -n +8 | xargs rm -f
+  ls -t "${OUTPUT_DIR}"/openclaw-full-backup_*.tar.gz* | grep -E '\.tar\.gz(\.enc)?$' | tail -n +8 | xargs rm -f
   info "  已删除 $((BACKUP_COUNT - 7)) 个旧备份"
 fi
 
