@@ -10,6 +10,10 @@
 #
 # 默认行为：保留当前服务器的 Gateway Token（防止 Dashboard 断连）。
 # 使用 --overwrite-gateway-token 覆盖此行为（全机灾难恢复场景）。
+#
+# 安全配置 (可选):
+#   加密密码: 设置环境变量 OC_BACKUP_PASS，或在运行时手动输入。
+#   建议方式: export OC_BACKUP_PASS="你的密码"
 
 set -euo pipefail
 
@@ -184,12 +188,20 @@ echo ""
 # ── 恢复前自动快照 ──────────────────────────────────────────────────────────
 # 逻辑重构：直接调用同级的 backup-full.sh 执行快照，确保规则一致
 if [ -f "${SCRIPT_DIR}/backup-full.sh" ]; then
+    # 自动清理旧快照 (保留最近 3 个)
+    OLD_SNAPSHOTS=$(ls -t /tmp/openclaw-full-backup_*.tar.gz 2>/dev/null || true)
+    SNAPSHOT_COUNT=$(echo "$OLD_SNAPSHOTS" | grep -v '^$' | wc -l | tr -d ' ')
+    if [ "$SNAPSHOT_COUNT" -gt 3 ]; then
+        warn "正在清理旧快照 (保留最近 3 个)..."
+        echo "$OLD_SNAPSHOTS" | tail -n +4 | xargs rm -f
+    fi
+
     warn "正在执行恢复前快照 (调用 backup-full.sh)..."
     # 强制禁用快照加密，避免在后台运行时弹密码
     OC_BACKUP_PASS="" bash "${SCRIPT_DIR}/backup-full.sh" /tmp > /tmp/oc-snapshot.log 2>&1 || warn "  快照生成遇到部分警告"
     
     # 从日志中提取生成的文件名
-    AUTO_BACKUP=$(grep "✅ 全卷备份完成:" /tmp/oc-snapshot.log | awk '{print $NF}' | tr -d '\r')
+    AUTO_BACKUP=$(grep "✅ 全卷备份完成:" /tmp/oc-snapshot.log | awk '{print $NF}' | tr -d '\r' | sed 's/\.enc$//')
     if [ -n "$AUTO_BACKUP" ]; then
         AUTO_BACKUP="/tmp/${AUTO_BACKUP}"
         info "  快照已保存: ${AUTO_BACKUP}"

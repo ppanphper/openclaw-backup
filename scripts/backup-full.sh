@@ -8,6 +8,10 @@
 #
 # 排除规则从 backup-exclude.conf 读取（每行一条 glob），
 # 后续新增排除项只需编辑配置文件，无需改动本脚本。
+#
+# 安全配置 (可选):
+#   加密密码: 设置环境变量 OC_BACKUP_PASS。
+#   建议在 ~/.openclaw/.env 中添加: OC_BACKUP_PASS="你的密码"
 
 set -euo pipefail
 
