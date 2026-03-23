@@ -33,6 +33,7 @@ dryrun(){ echo -e "${CYAN}[DRY]${NC} Would: $*"; }
 # ── Validate ─────────────────────────────────────────────────────────────────
 [ -z "$ARCHIVE" ] && error "Usage: restore.sh <backup.tar.gz> [--dry-run] [--overwrite-gateway-token]"
 [ ! -f "$ARCHIVE" ] && error "Archive not found: $ARCHIVE"
+command -v python3 >/dev/null 2>&1 || error "Require python3 to restore configuration. Please install it first."
 
 echo ""
 echo "🦞 OpenClaw Restore"
@@ -75,10 +76,10 @@ fi
 CURRENT_GATEWAY_TOKEN=""
 CURRENT_CONFIG="${OPENCLAW_HOME}/openclaw.json"
 if [ -f "$CURRENT_CONFIG" ]; then
-  CURRENT_GATEWAY_TOKEN=$(python3 -c "
-import json, sys
+  CURRENT_GATEWAY_TOKEN=$(_OC_CONF="$CURRENT_CONFIG" python3 -c "
+import json, os
 try:
-    d = json.load(open('${CURRENT_CONFIG}'))
+    d = json.load(open(os.environ['_OC_CONF']))
     print(d.get('gateway', {}).get('auth', {}).get('token', ''))
 except Exception:
     print('')
@@ -139,18 +140,43 @@ if ! $DRY_RUN; then
   sleep 2
 fi
 
-# ── 1. Workspace ─────────────────────────────────────────────────────────────
+# ── 1. Workspaces ────────────────────────────────────────────────────────────
+# Restore default workspace
 if [ -d "${BACKUP_DIR}/workspace" ]; then
-  info "Restoring workspace..."
+  info "Restoring default workspace..."
   if $DRY_RUN; then
     dryrun "rsync workspace/ → ${OPENCLAW_HOME}/workspace/"
-    find "${BACKUP_DIR}/workspace" -type f | wc -l | xargs -I{} echo "  {} files would be restored"
+    find "${BACKUP_DIR}/workspace" -type f 2>/dev/null | wc -l | xargs -I{} echo "  {} files would be restored"
   else
     mkdir -p "${OPENCLAW_HOME}/workspace"
     rsync -a "${BACKUP_DIR}/workspace/" "${OPENCLAW_HOME}/workspace/"
-    info "  workspace restored"
+    info "  default workspace restored"
   fi
 fi
+
+# Restore dynamic multi-workspaces
+if [ -d "${BACKUP_DIR}/workspaces" ]; then
+  info "Restoring dynamic workspaces..."
+  for ws_dir in "${BACKUP_DIR}/workspaces/"*/; do
+    [ ! -d "$ws_dir" ] && continue
+    ws_name=$(basename "$ws_dir")
+    
+    if [[ "$ws_name" == external_* ]]; then
+      warn "  External workspace [${ws_name}] found. Skipping auto-restore to prevent arbitrary path overwrite. Please restore manually from archive."
+      continue
+    fi
+    
+    target_dir="${OPENCLAW_HOME}/workspaces/${ws_name}"
+    if $DRY_RUN; then
+      dryrun "rsync workspaces/${ws_name}/ → ${target_dir}/"
+    else
+      mkdir -p "${target_dir}"
+      rsync -a "$ws_dir" "${target_dir}/"
+      info "  workspace restored: workspaces/${ws_name}"
+    fi
+  done
+fi
+
 
 # ── 2. Gateway config ─────────────────────────────────────────────────────────
 if [ -f "${BACKUP_DIR}/config/openclaw.json" ]; then
@@ -168,10 +194,10 @@ if [ -f "${BACKUP_DIR}/config/openclaw.json" ]; then
     # Overwriting it causes "gateway token mismatch" in Control UI / Dashboard.
     # We write back the token we saved before restore began.
     if [ -n "$CURRENT_GATEWAY_TOKEN" ] && ! $OVERWRITE_GATEWAY_TOKEN; then
-      python3 -c "
-import json, sys
-path = '${OPENCLAW_HOME}/openclaw.json'
-token = '${CURRENT_GATEWAY_TOKEN}'
+      _OC_PATH="${OPENCLAW_HOME}/openclaw.json" _OC_TOKEN="$CURRENT_GATEWAY_TOKEN" python3 -c "
+import json, os
+path = os.environ['_OC_PATH']
+token = os.environ['_OC_TOKEN']
 d = json.load(open(path))
 if 'gateway' not in d:
     d['gateway'] = {}
